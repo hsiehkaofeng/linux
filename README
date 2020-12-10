@@ -16,3 +16,65 @@ several of them using the Restructured Text markup notation.
 Please read the Documentation/process/changes.rst file, as it contains the
 requirements for building and running the kernel, and information about
 the problems which may result by upgrading your kernel.
+
+
+============
+Editor : Kao-Feng Hsieh
+
+This project is based on linux 5.9.10.
+In this project, in order to reduce TLB overhead, I aim to make different 
+processes share their ASID. I mainly focus on containered processes, 
+which are run by Docker.
+
+In the current X86 system, the kernel only utilizes 6 ASIDs in TLB. Each 
+ASID has a corresponding ctx_id, which is a unique identifier for an address 
+space(mm_struct). Everytime when a process is asking for an ASID, the kernel 
+will first iterate through the current ASIDs in the TLB and see if there is 
+an ASID’s corresponding ctx_id that matches the process’s ctx_id. If there 
+it is, return the ASID to the process. Otherwise, return an ASID and flush 
+the TLB. However, different containered processes run the same application may 
+use different address space. That means they utilize different ASIDs although 
+they run the same application. In this scenario, it could cause TLB overhead 
+and invalidate TLB.
+
+**tlbstate**
+|asid|ctx_id|
+| --- | --- |
+|1|0|
+|2|3|
+|3|5|
+|4|7|
+|5|8|
+|6|10|
+
+We can create another field in an address space, let’s call it “group_ctx_id” for 
+now. Everytime when a process is being created, we assign a group_ctx_id to it. 
+
+**tlbstate**
+|asid|ctx_id|group_ctx_id|
+| --- | --- | --- |
+|1|0|1|
+|2|3|2|
+|3|5|5|
+|4|7|0|
+|5|8|0|
+|6|10|0|
+
+If we want to make those processes run the same application to share their ASID, we 
+assign them with the same group_ctx_id. Next, we add an additional step to the kernel,
+it needs to examine the group_ctx_id in TLB before the kernel assigns a new ASID to a 
+process. Although there is no matched ctx_id for the process which is asking for an 
+ASID, the kernel still needs to check if there is a matched group_ctx_id in TLB. In a 
+word, it makes different processes can share their ASID even though they use different 
+address spaces.
+
+
+We leave group_ctx_id 0 for those normal processes, instead of containered processes. 
+
+modified:
+tlb_context of tlbstate in tlbflush.h(arch/x86/include/asm/tlbflush.h)
+mm_struct in mm_types.h(include/linux/mm_types.h)
+choose_new_asid() in tlb.c(arch/x86/mm/tlb.c)
+fork.c (kernel/fork.c)
+we also need to make shared processes have the same page table layout.
+begin_new_exec() in exec.c(fs/exec.c)
